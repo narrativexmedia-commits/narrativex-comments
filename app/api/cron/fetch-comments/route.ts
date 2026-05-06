@@ -7,7 +7,6 @@ export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request) {
-  // Verify cron secret
   const authHeader = request.headers.get('authorization')
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -17,49 +16,45 @@ export async function GET(request: Request) {
   const results = { processed: 0, new_comments: 0, errors: [] as string[] }
 
   try {
-    // Get all active clients
-    const { data: clients, error: clientsErr } = await supabase
+    const { data: clients } = await supabase
       .from('cm_clients')
       .select('*')
       .eq('is_active', true)
 
-    if (clientsErr) throw new Error(`Clients fetch error: ${clientsErr.message}`)
     if (!clients || clients.length === 0) {
       return NextResponse.json({ message: 'No active clients', ...results })
     }
 
-    // Get existing comment IDs (all time — to avoid re-processing)
+    // Get existing comment IDs to avoid reprocessing
     const { data: existingComments } = await supabase
       .from('cm_comments')
       .select('comment_id')
 
     const existingIds = new Set((existingComments || []).map((c: any) => c.comment_id))
 
-    for (const client of clients) {
+    // Process only 5 clients per run to stay within timeout
+    // Use a rotating offset based on current minute
+    const minute = new Date().getMinutes()
+    const batchSize = 5
+    const offset = (Math.floor(minute / 5) * batchSize) % clients.length
+    const batch = clients.slice(offset, offset + batchSize)
+
+    for (const client of batch) {
       try {
         results.processed++
+        if (!client.instagram_id || !client.page_access_token) continue
 
-        if (!client.instagram_id || !client.page_access_token) {
-          results.errors.push(`${client.page_name}: missing instagram_id or token`)
-          continue
-        }
-
-        // Get recent posts (last 3 hours)
         const posts = await getInstagramPosts(client.instagram_id, client.page_access_token)
 
-        for (const post of posts) {
-          // Get comments on this post (last 3 hours)
+        for (const post of posts.slice(0, 5)) {
           const rawComments = await getPostComments(post.id, client.page_access_token)
 
           for (const rawComment of rawComments) {
-            // Skip if already in DB
             if (existingIds.has(rawComment.id)) continue
 
-            // Check if already has a reply on Instagram
             const hasReply = await checkCommentReplies(rawComment.id, client.page_access_token)
 
             if (hasReply) {
-              // Save as manually_replied
               await supabase.from('cm_comments').insert({
                 client_id: client.id,
                 comment_id: rawComment.id,
@@ -76,7 +71,6 @@ export async function GET(request: Request) {
               continue
             }
 
-            // Generate AI reply
             let aiReply = ''
             let isNegative = false
 
@@ -87,9 +81,8 @@ export async function GET(request: Request) {
               )
               aiReply = generated.reply
               isNegative = generated.is_negative
-            } catch (claudeErr: any) {
-              results.errors.push(`Claude error for ${client.page_name}: ${claudeErr.message}`)
-              // Still save the comment, just without an AI reply
+            } catch (e: any) {
+              results.errors.push(`Claude error: ${e.message}`)
             }
 
             await supabase.from('cm_comments').insert({
@@ -107,22 +100,16 @@ export async function GET(request: Request) {
 
             existingIds.add(rawComment.id)
             results.new_comments++
-
-            // Small delay to avoid Claude rate limits
             await new Promise((r) => setTimeout(r, 200))
           }
         }
-      } catch (clientErr: any) {
-        results.errors.push(`${client.page_name}: ${clientErr.message}`)
+      } catch (e: any) {
+        results.errors.push(`${client.page_name}: ${e.message}`)
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      ...results,
-    })
+    return NextResponse.json({ success: true, timestamp: new Date().toISOString(), ...results })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message, ...results }, { status: 500 })
+    return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
