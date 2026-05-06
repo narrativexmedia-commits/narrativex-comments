@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
-import { getInstagramPosts, getPostComments, checkCommentReplies } from '@/lib/meta'
+import { getInstagramPosts, getPostComments } from '@/lib/meta'
 import { generateReply } from '@/lib/claude'
 
 export const maxDuration = 60
@@ -14,6 +14,7 @@ export async function GET(request: Request) {
 
   const supabase = createServiceClient()
   const results = { processed: 0, new_comments: 0, errors: [] as string[] }
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
 
   try {
     const { data: clients } = await supabase
@@ -25,15 +26,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ message: 'No active clients', ...results })
     }
 
-    // Get existing comment IDs to avoid reprocessing
     const { data: existingComments } = await supabase
       .from('cm_comments')
       .select('comment_id')
 
     const existingIds = new Set((existingComments || []).map((c: any) => c.comment_id))
 
-    // Process only 5 clients per run to stay within timeout
-    // Use a rotating offset based on current minute
     const minute = new Date().getMinutes()
     const batchSize = 5
     const offset = (Math.floor(minute / 5) * batchSize) % clients.length
@@ -49,28 +47,12 @@ export async function GET(request: Request) {
         for (const post of posts.slice(0, 5)) {
           const rawComments = await getPostComments(post.id, client.page_access_token)
 
-          for (const rawComment of rawComments) {
-            if (existingIds.has(rawComment.id)) continue
+          const newRecentComments = rawComments.filter((c) => {
+            if (existingIds.has(c.id)) return false
+            return new Date(c.timestamp) >= threeHoursAgo
+          })
 
-            const hasReply = await checkCommentReplies(rawComment.id, client.page_access_token)
-
-            if (hasReply) {
-              await supabase.from('cm_comments').insert({
-                client_id: client.id,
-                comment_id: rawComment.id,
-                commenter_name: rawComment.username,
-                comment_text: rawComment.text,
-                post_id: post.id,
-                post_caption: post.caption || null,
-                post_permalink: post.permalink || null,
-                status: 'manually_replied',
-                is_negative: false,
-              })
-              existingIds.add(rawComment.id)
-              results.new_comments++
-              continue
-            }
-
+          for (const rawComment of newRecentComments.slice(0, 10)) {
             let aiReply = ''
             let isNegative = false
 
@@ -82,7 +64,7 @@ export async function GET(request: Request) {
               aiReply = generated.reply
               isNegative = generated.is_negative
             } catch (e: any) {
-              results.errors.push(`Claude error: ${e.message}`)
+              results.errors.push(`Claude: ${e.message}`)
             }
 
             await supabase.from('cm_comments').insert({
@@ -100,7 +82,7 @@ export async function GET(request: Request) {
 
             existingIds.add(rawComment.id)
             results.new_comments++
-            await new Promise((r) => setTimeout(r, 200))
+            await new Promise((r) => setTimeout(r, 150))
           }
         }
       } catch (e: any) {
