@@ -1,8 +1,7 @@
 const GRAPH = 'https://graph.facebook.com/v19.0'
 
 export async function getInstagramPosts(instagramId: string, accessToken: string) {
-  const since = Math.floor((Date.now() - 3 * 60 * 60 * 1000) / 1000) // 3 hours ago
-  const url = `${GRAPH}/${instagramId}/media?fields=id,caption,permalink,timestamp&since=${since}&limit=20&access_token=${accessToken}`
+  const url = `${GRAPH}/${instagramId}/media?fields=id,caption,permalink,timestamp&limit=10&access_token=${accessToken}`
   const res = await fetch(url, { next: { revalidate: 0 } })
   const data = await res.json()
   if (data.error) throw new Error(data.error.message)
