@@ -15,28 +15,45 @@ export async function generateReply(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-5',
-      max_tokens: 300,
+      // Haiku 4.5: fast, cheap (~$1/$5 per M tokens), perfect for short replies.
+      model: 'claude-haiku-4-5',
+      max_tokens: 200,
       system: `You are a social media manager replying to Instagram comments on behalf of a brand.
 
 Brand persona: ${brandPersona}
 
-Your job: Write a warm, genuine, on-brand reply to the comment. Also flag if the comment is negative.
+Your job: Write a warm, on-brand reply to the Instagram comment. Also flag if the comment is negative.
 
-CRITICAL: Respond ONLY with a valid JSON object. No markdown, no explanation, no preamble.
+CRITICAL: Respond ONLY with a valid JSON object. No markdown, no preamble, no explanation.
 Format: {"reply": "your reply here", "is_negative": false}
 
-Rules for reply:
-- Keep it under 200 characters
-- Sound human and warm, not robotic
-- Match the brand tone from the persona
-- Don't use generic hashtags
-- If it's a question, answer it helpfully
-- If it's a compliment, thank them genuinely
+REPLY LENGTH RULES — match the energy of the comment:
 
-Rules for is_negative:
-- true if: hostile, rude, spam, complaints, threats, or requires escalation
-- false if: praise, questions, suggestions, or neutral comments`,
+1. EMOJI-ONLY or VERY SHORT comment (e.g. "🔥", "❤️", "🙌", "wow", "nice", "🔥🔥🔥"):
+   → 3-5 word reply WITH emojis. Examples:
+     • "Thank you for the support! 🙌"
+     • "Means a lot! ❤️"
+     • "Thanks so much! 🔥"
+     • "Appreciate you! 🙏"
+   Do NOT write a full sentence. Do NOT write two sentences.
+
+2. SHORT COMPLIMENT or STATEMENT (e.g. "love this post", "looks amazing", "great work"):
+   → ONE short, warm sentence. No fluff, no hashtags.
+
+3. REAL QUESTION (e.g. "where can I buy this?", "what time does it open?", "do you ship to Mumbai?"):
+   → ONE sentence answer preferred. TWO sentences MAX, only if you genuinely need to explain.
+   → If you don't know the answer, briefly say to DM or check the bio link.
+
+HARD RULES:
+- NEVER exceed 200 characters total.
+- NEVER use generic hashtags like #love or #amazing.
+- Sound human and warm, not robotic. No "Thank you for your kind comment!" corporate-speak.
+- Match the brand tone from the persona above.
+- Mirror the commenter's energy — if they used emojis, use emojis back. If they're casual, be casual.
+
+NEGATIVITY DETECTION (is_negative):
+- true if: hostile, rude, spam, complaints, threats, accusations, or anything needing escalation.
+- false if: praise, questions, suggestions, neutral observations, or anything friendly.`,
       messages: [
         { role: 'user', content: `Instagram comment: "${commentText}"` },
       ],
@@ -44,17 +61,19 @@ Rules for is_negative:
   })
 
   const data = await response.json()
-  
+
   if (!data.content?.[0]?.text) {
-    throw new Error('No response from Claude API')
+    // Surface the API error if present so cron logs are useful
+    const apiErr = data?.error?.message ? ` (${data.error.message})` : ''
+    throw new Error(`No response from Claude API${apiErr}`)
   }
 
   const text = data.content[0].text.trim()
-  
+
   try {
     const parsed = JSON.parse(text)
     return {
-      reply: String(parsed.reply || '').slice(0, 250),
+      reply: String(parsed.reply || '').slice(0, 200),
       is_negative: Boolean(parsed.is_negative),
     }
   } catch {
@@ -64,13 +83,13 @@ Rules for is_negative:
       try {
         const parsed = JSON.parse(match[0])
         return {
-          reply: String(parsed.reply || text).slice(0, 250),
+          reply: String(parsed.reply || text).slice(0, 200),
           is_negative: Boolean(parsed.is_negative),
         }
       } catch {}
     }
     return {
-      reply: text.slice(0, 250),
+      reply: text.slice(0, 200),
       is_negative: false,
     }
   }

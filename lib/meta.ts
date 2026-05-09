@@ -49,6 +49,29 @@ export async function postReply(commentId: string, message: string, accessToken:
   return data as { id: string }
 }
 
+export async function deleteInstagramComment(commentId: string, accessToken: string) {
+  const res = await fetch(
+    `${GRAPH}/${commentId}?access_token=${encodeURIComponent(accessToken)}`,
+    { method: 'DELETE' }
+  )
+  // Some DELETEs return 200 with `{success:true}` and an empty body in edge cases.
+  let data: any = {}
+  try { data = await res.json() } catch { /* tolerate empty body */ }
+
+  if (data.error) {
+    const msg: string = data.error.message || 'Unknown Instagram error'
+    const code = data.error.code
+    // Common Meta permission errors when the app doesn't have instagram_manage_comments
+    if (code === 10 || code === 200 || code === 190 || /permission/i.test(msg)) {
+      throw new Error(
+        `Instagram delete permission missing — your Meta app needs the "instagram_manage_comments" scope. (${msg})`
+      )
+    }
+    throw new Error(msg)
+  }
+  return data as { success?: boolean }
+}
+
 export async function verifyPageAndGetInstagramId(pageId: string, accessToken: string) {
   const url = `${GRAPH}/${pageId}?fields=name,instagram_business_account,access_token&access_token=${accessToken}`
   const res = await fetch(url, { next: { revalidate: 0 } })

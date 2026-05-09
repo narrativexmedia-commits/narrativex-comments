@@ -14,6 +14,7 @@ const TABS: { key: CommentStatus | 'all'; label: string; icon: string }[] = [
   { key: 'rejected', label: 'Rejected', icon: '✗' },
   { key: 'posted', label: 'Posted', icon: '🔵' },
   { key: 'manually_replied', label: 'Manual', icon: '✋' },
+  { key: 'deleted', label: 'Deleted', icon: '🗑️' },
 ]
 
 export default function DashboardPage() {
@@ -80,24 +81,37 @@ export default function DashboardPage() {
 
     if (!data) return
 
-    // Get badge counts
-    const { data: counts } = await supabase
-      .from('cm_comments')
-      .select('client_id, status')
-      .in('status', ['pending', 'negative'])
+    // Get badge counts for ALL statuses, grouped server-side via RPC.
+    // Returns one row per (client_id, status) — much lighter than fetching every comment.
+    const { data: counts, error: countsErr } = await supabase.rpc('cm_comment_counts')
 
-    const countMap: Record<string, { pending: number; negative: number }> = {}
-    counts?.forEach((c) => {
-      if (!countMap[c.client_id]) countMap[c.client_id] = { pending: 0, negative: 0 }
-      if (c.status === 'pending') countMap[c.client_id].pending++
-      if (c.status === 'negative') countMap[c.client_id].negative++
-    })
+    const countMap: Record<string, Record<string, number>> = {}
+    if (!countsErr && counts) {
+      ;(counts as any[]).forEach((c) => {
+        if (!countMap[c.client_id]) countMap[c.client_id] = {}
+        countMap[c.client_id][c.status] = Number(c.cnt) || 0
+      })
+    } else if (countsErr) {
+      // Fallback if the RPC hasn't been created yet — fetch all (id, status) pairs.
+      const { data: rawCounts } = await supabase
+        .from('cm_comments')
+        .select('client_id, status')
+      ;(rawCounts || []).forEach((c: any) => {
+        if (!countMap[c.client_id]) countMap[c.client_id] = {}
+        countMap[c.client_id][c.status] = (countMap[c.client_id][c.status] || 0) + 1
+      })
+    }
 
     setClients(
       data.map((cl) => ({
         ...cl,
         pending_count: countMap[cl.id]?.pending || 0,
         negative_count: countMap[cl.id]?.negative || 0,
+        approved_count: countMap[cl.id]?.approved || 0,
+        rejected_count: countMap[cl.id]?.rejected || 0,
+        posted_count: countMap[cl.id]?.posted || 0,
+        manually_replied_count: countMap[cl.id]?.manually_replied || 0,
+        deleted_count: countMap[cl.id]?.deleted || 0,
       }))
     )
   }, [])
@@ -185,19 +199,28 @@ export default function DashboardPage() {
   }
 
   const deleteComment = async (comment: Comment) => {
-    if (!confirm('Remove this comment from the dashboard? (Instagram is not affected)')) return
+    const preview = comment.comment_text.length > 80
+      ? comment.comment_text.slice(0, 80) + '…'
+      : comment.comment_text
+    if (!confirm(
+      `Delete this comment from Instagram?\n\n"${preview}"\n\n` +
+      `It will be permanently removed from Instagram. The record stays in your dashboard under "Deleted" for audit.`
+    )) return
+
     setActionLoading(comment.id)
     try {
       const res = await fetch('/api/comments/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commentId: comment.id }),
+        body: JSON.stringify({ commentId: comment.id, userEmail: user?.email }),
       })
-      if (!res.ok) throw new Error('Failed')
-      showToast('Comment removed')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Failed to delete')
+      showToast('Comment deleted from Instagram')
       setComments((prev) => prev.filter((c) => c.id !== comment.id))
-    } catch {
-      showToast('Failed to delete', 'err')
+      loadClients()
+    } catch (e: any) {
+      showToast(e.message || 'Failed to delete', 'err')
     }
     setActionLoading(null)
   }
@@ -306,11 +329,16 @@ export default function DashboardPage() {
 
   const tabCounts = useCallback(() => {
     const c = selectedClient
-    if (!c) return {}
+    if (!c) return {} as Record<string, number>
     return {
       pending: c.pending_count || 0,
       negative: c.negative_count || 0,
-    }
+      approved: c.approved_count || 0,
+      rejected: c.rejected_count || 0,
+      posted: c.posted_count || 0,
+      manually_replied: c.manually_replied_count || 0,
+      deleted: c.deleted_count || 0,
+    } as Record<string, number>
   }, [selectedClient])()
 
   const toggleSelect = (id: string) => {
@@ -539,7 +567,7 @@ export default function DashboardPage() {
             >
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                 {TABS.map((tab) => {
-                  const count = tab.key === 'pending' ? tabCounts.pending : tab.key === 'negative' ? tabCounts.negative : undefined
+                  const count = tabCounts[tab.key as string]
                   return (
                     <button
                       key={tab.key}
@@ -653,7 +681,7 @@ export default function DashboardPage() {
         >
           {selectedClientId ? (
             TABS.slice(0, 5).map((tab) => {
-              const count = tab.key === 'pending' ? tabCounts.pending : tab.key === 'negative' ? tabCounts.negative : undefined
+              const count = tabCounts[tab.key as string]
               return (
                 <button
                   key={tab.key}
@@ -927,8 +955,8 @@ function CommentCard({
               <button
                 onClick={onDelete}
                 className="text-nx-text-3 hover:text-red-400 transition-colors"
-                style={{ opacity: 0.6 }}
-                title="Remove from dashboard"
+                style={{ opacity: 0.6, display: comment.status === 'deleted' ? 'none' : undefined }}
+                title="Delete from Instagram"
               >
                 <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <polyline points="3 6 5 6 21 6" />

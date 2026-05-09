@@ -28,6 +28,7 @@ export type CommentStatus =
   | 'posted'
   | 'manually_replied'
   | 'failed'
+  | 'deleted'
 
 export const STATUS_LABELS: Record<CommentStatus, string> = {
   pending: 'Pending',
@@ -37,6 +38,7 @@ export const STATUS_LABELS: Record<CommentStatus, string> = {
   posted: 'Posted',
   manually_replied: 'Manual',
   failed: 'Failed',
+  deleted: 'Deleted',
 }
 
 export const STATUS_COLORS: Record<CommentStatus, string> = {
@@ -47,6 +49,7 @@ export const STATUS_COLORS: Record<CommentStatus, string> = {
   posted: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
   manually_replied: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
   failed: 'bg-red-500/15 text-red-400 border-red-500/30',
+  deleted: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
 }
 
 export interface Client {
@@ -60,6 +63,11 @@ export interface Client {
   created_at: string
   pending_count?: number
   negative_count?: number
+  approved_count?: number
+  rejected_count?: number
+  posted_count?: number
+  manually_replied_count?: number
+  deleted_count?: number
 }
 
 export interface Comment {
